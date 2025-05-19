@@ -1,0 +1,32 @@
+name: Log Sensex Volatility
+
+on:
+  schedule:
+    # every 1 minute during Indian market hours (09:15–15:30 IST Mon–Fri)
+    - cron:  '*/1 4-9 * * 1-5'  # UTC times 04:15→09:30 (IST 09:45→15:00)
+  workflow_dispatch: {}
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    env:
+      GSPREAD_CRED_JSON: ${{ secrets.GSPREAD_CRED_JSON }}
+      GSHEET_KEY:      ${{ secrets.GSHEET_KEY }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Fetch & log data
+      run: |
+        python - <<'PYCODE'
+        from fetch_vola import fetch_sensex_1m, add_volatility, write_to_gsheet
+        df = add_volatility(fetch_sensex_1m())
+        write_to_gsheet(df, sheet_key="${{ env.GSHEET_KEY }}")
+        PYCODE
