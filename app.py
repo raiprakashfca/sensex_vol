@@ -6,7 +6,7 @@ import os
 # ----------- Streamlit Page Config -----------
 st.set_page_config(page_title="🔍 SENSEX Volatility Tracker", layout="wide")
 
-@st.cache(ttl=60)
+@st.cache_data(ttl=60)
 def get_data():
     """Fetch and compute volatility."""
     df = fetch_sensex_1m()
