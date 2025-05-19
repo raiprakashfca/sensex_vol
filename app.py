@@ -1,67 +1,83 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import streamlit as st
+import mplfinance as mpf
+from fetch_vola import fetch_sensex_1m, add_volatility, save_to_excel, write_to_gsheet
 import os
-import json
 
+# ----------- Streamlit Page Config -----------
+st.set_page_config(page_title="🔍 SENSEX Volatility Tracker", layout="wide")
 
-def fetch_sensex_1m():
-    """Fetch today's 1-minute SENSEX bars (OHLC) and return a DataFrame in IST."""
-    ticker = yf.Ticker("^BSESN")
-    df = ticker.history(interval="1m", period="1d").dropna()
-    df.index = df.index.tz_convert("Asia/Kolkata")
-    return df[["Open", "High", "Low", "Close"]]
+@st.cache(ttl=60)
+def get_data():
+    """Fetch and compute volatility."""
+    df = fetch_sensex_1m()
+    return add_volatility(df)
 
+# Load data
+df = get_data()
 
-def add_volatility(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
-    """
-    Compute annualized rolling volatility on log returns.
+# --- Interval selector ---
+interval_labels = {
+    "1 Minute": "1T",
+    "5 Minutes": "5T",
+    "15 Minutes": "15T",
+    "1 Hour": "1H",
+    "1 Day": "1D",
+}
+choice = st.selectbox("📊 Chart Interval", list(interval_labels.keys()), index=0)
+freq = interval_labels[choice]
 
-    Parameters:
-    - df: DataFrame with a "Close" column.
-    - window: look-back period in minutes.
+# --- Resample price and volatility ---
+price_ohlc = (
+    df[["Open", "High", "Low", "Close"]]
+    .resample(freq)
+    .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+    .dropna()
+)
+vola_ohlc = df["vola"].resample(freq).ohlc().dropna()
 
-    Returns:
-    - DataFrame with new columns "ret" (log returns) and "vola" (annualized volatility).
-    """
-    df = df.copy()
-    df["ret"] = np.log(df["Close"] / df["Close"].shift())
-    factor = np.sqrt(252 * 6.5 * 60)
-    df["vola"] = df["ret"].rolling(window).std() * factor
-    return df.dropna()
+# --- Title ---
+st.header(f"1️⃣ SENSEX {choice} Price & Volatility")
 
+# --- Price Candlestick Chart ---
+fig_price, _ = mpf.plot(
+    price_ohlc,
+    type="candle",
+    style="yahoo",
+    mav=(5, 10),
+    volume=False,
+    returnfig=True,
+    figsize=(10, 4)
+)
+st.pyplot(fig_price)
 
-def save_to_excel(df: pd.DataFrame, path: str = "sensex_volatility.xlsx") -> str:
-    """Save DataFrame to an Excel file and return its path."""
-    df.to_excel(path)
-    return path
+# --- Volatility Candlestick Chart ---
+fig_vola, _ = mpf.plot(
+    vola_ohlc,
+    type="candle",
+    style="charles",
+    returnfig=True,
+    figsize=(10, 4)
+)
+st.pyplot(fig_vola)
 
+# --- Raw Data Table ---
+st.subheader("🔢 Raw Data (1-min bars with volatility)")
+st.dataframe(df)
 
-def write_to_gsheet(df: pd.DataFrame,
-                    sheet_key: str,
-                    worksheet: str = "Sheet1") -> None:
-    """
-    Write DataFrame into a Google Sheet using credentials from an environment variable.
-
-    Environment:
-    - GSPREAD_CRED_JSON: JSON string of service-account credentials
-
-    Parameters:
-    - df: DataFrame (index as Timestamp)
-    - sheet_key: Google Sheet ID
-    - worksheet: tab name
-    """
-    scope = ["https://www.googleapis.com/auth/spreadsheets"]
-    cred_json = os.environ.get("GSPREAD_CRED_JSON")
-    if not cred_json:
-        raise ValueError("Environment variable GSPREAD_CRED_JSON not set")
-    creds_dict = json.loads(cred_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(sheet_key)
-    ws = sheet.worksheet(worksheet)
-    ws.clear()
-    rows = [df.reset_index().columns.tolist()] + df.reset_index().astype(str).values.tolist()
-    ws.update(rows)
+# --- Export Buttons ---
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("📥 Download Excel"):
+        path = save_to_excel(df)
+        with open(path, "rb") as f:
+            st.download_button(
+                label="Download .xlsx",
+                data=f,
+                file_name="sensex_volatility.xlsx"
+            )
+with col2:
+    # Prefer environment var over secrets for CI
+    sheet_key = os.environ.get("GSHEET_KEY") or st.secrets.get("GSHEET_KEY")
+    if st.button("↪️ Send to Google Sheet"):
+        write_to_gsheet(df, sheet_key)
+        st.success("Sent to Google Sheet!")
